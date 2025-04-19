@@ -175,7 +175,179 @@ def predict(model, data):
         st.error(f"Prediction error: {str(e)}")
         return None, None
 
-# [Rest of your plotting and visualization functions remain the same...]
+def show_metrics(y_true, y_pred, y_pred_proba, model_name="Model"):
+    try:
+        report = classification_report(y_true, y_pred, output_dict=True)
+        df_report = pd.DataFrame(report).transpose()
+        st.subheader(f"{model_name} Metrics")
+        st.dataframe(df_report.style.format("{:.2f}"))
+        
+        st.subheader("Confusion Matrix")
+        conf_matrix = confusion_matrix(y_true, y_pred)
+        fig, ax = plt.subplots(figsize=(6, 4))
+        sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', ax=ax,
+                    xticklabels=['Non-Default', 'Default'],
+                    yticklabels=['Non-Default', 'Default'])
+        ax.set_xlabel('Predicted')
+        ax.set_ylabel('Actual')
+        ax.set_title('Confusion Matrix')
+        st.pyplot(fig)
+        
+        if y_pred_proba is not None:
+            st.write(f"ROC AUC: {roc_auc_score(y_true, y_pred_proba):.3f}")
+            st.write(f"PR AUC: {average_precision_score(y_true, y_pred_proba):.3f}")
+    except Exception as e:
+        st.error(f"Error showing metrics: {str(e)}")
+
+def plot_roc_curve(y_true, y_pred_proba, model_name="Model"):
+    try:
+        fpr, tpr, _ = roc_curve(y_true, y_pred_proba)
+        roc_auc = auc(fpr, tpr)
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.plot(fpr, tpr, lw=2, label=f'{model_name} (AUC = {roc_auc:.2f})')
+        ax.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+        ax.set_xlim([0.0, 1.0])
+        ax.set_ylim([0.0, 1.05])
+        ax.set_xlabel('False Positive Rate')
+        ax.set_ylabel('True Positive Rate')
+        ax.set_title('Receiver Operating Characteristic (ROC) Curve')
+        ax.legend(loc="lower right")
+        return fig
+    except Exception as e:
+        st.error(f"Error plotting ROC curve: {str(e)}")
+        return None
+
+def plot_precision_recall_curve(y_true, y_pred_proba, model_name="Model"):
+    try:
+        precision, recall, _ = precision_recall_curve(y_true, y_pred_proba)
+        avg_precision = average_precision_score(y_true, y_pred_proba)
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.plot(recall, precision, lw=2, label=f'{model_name} (AP = {avg_precision:.2f})')
+        ax.set_xlabel('Recall')
+        ax.set_ylabel('Precision')
+        ax.set_ylim([0.0, 1.05])
+        ax.set_xlim([0.0, 1.0])
+        ax.set_title('Precision-Recall Curve')
+        ax.legend(loc="lower left")
+        return fig
+    except Exception as e:
+        st.error(f"Error plotting precision-recall curve: {str(e)}")
+        return None
+
+def plot_feature_importance(model, feature_names):
+    try:
+        if hasattr(model, 'feature_importances_'):
+            importances = model.feature_importances_
+            indices = np.argsort(importances)[::-1]
+            fig, ax = plt.subplots(figsize=(10, 8))
+            ax.set_title("Feature Importances")
+            ax.barh(range(len(indices)), importances[indices], color='b', align='center')
+            ax.set_yticks(range(len(indices)))
+            ax.set_yticklabels([feature_names[i] for i in indices])
+            ax.invert_yaxis()
+            return fig
+        else:
+            st.warning("Model doesn't have feature_importances_ attribute")
+            return None
+    except Exception as e:
+        st.error(f"Error plotting feature importance: {str(e)}")
+        return None
+
+def plot_shap_values(model, X, feature_names):
+    try:
+        if isinstance(model, Pipeline):
+            transformer_steps = model.steps[:-1]
+            transformer = Pipeline(transformer_steps)
+            X_transformed = transformer.transform(X)
+            final_estimator = model.steps[-1][1]
+        else:
+            X_transformed = X
+            final_estimator = model
+        
+        explainer = shap.Explainer(final_estimator)
+        shap_values = explainer.shap_values(X_transformed)
+        fig, ax = plt.subplots(figsize=(10, 8))
+        shap.summary_plot(shap_values, X_transformed, feature_names=feature_names, plot_type="bar")
+        return fig
+    except Exception as e:
+        st.warning(f"SHAP visualization not available for this model type. Error: {str(e)}")
+        return None
+
+def show_exploratory_analysis(df):
+    st.header("Exploratory Data Analysis")
+    
+    # Target variable distribution
+    if 'Default' in df.columns:
+        st.subheader("Target Variable Distribution")
+        fig, ax = plt.subplots(figsize=(8, 5))
+        sns.countplot(x='Default', data=df, ax=ax)
+        ax.set_title('Distribution of Loan Defaults')
+        ax.set_xlabel('Default Status')
+        ax.set_ylabel('Count')
+        st.pyplot(fig)
+    
+    # Numerical features distribution
+    st.subheader("Numerical Features Distribution")
+    num_cols = ['Age', 'Income', 'Amount', 'Rate', 'Percent_income', 'Cred_length']
+    available_num_cols = [col for col in num_cols if col in df.columns]
+    
+    if available_num_cols:
+        selected_num = st.selectbox("Select numerical feature to visualize", available_num_cols)
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        sns.histplot(df[selected_num], kde=True, ax=ax1)
+        ax1.set_title(f'Distribution of {selected_num}')
+        
+        if 'Default' in df.columns:
+            sns.boxplot(x='Default', y=selected_num, data=df, ax=ax2)
+            ax2.set_title(f'{selected_num} by Default Status')
+        else:
+            sns.boxplot(y=selected_num, data=df, ax=ax2)
+            ax2.set_title(f'Boxplot of {selected_num}')
+        
+        st.pyplot(fig)
+    else:
+        st.warning("No numerical features available for visualization")
+    
+    # Categorical features distribution
+    st.subheader("Categorical Features Distribution")
+    cat_cols = ['Home', 'Intent', 'Status']
+    available_cat_cols = [col for col in cat_cols if col in df.columns]
+    
+    if available_cat_cols:
+        selected_cat = st.selectbox("Select categorical feature to visualize", available_cat_cols)
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+        value_counts = df[selected_cat].value_counts()
+        ax1.pie(value_counts, labels=value_counts.index, autopct='%1.1f%%', startangle=90)
+        ax1.set_title(f'Distribution of {selected_cat}')
+        
+        if 'Default' in df.columns:
+            sns.countplot(x=selected_cat, hue='Default', data=df, ax=ax2)
+            ax2.set_title(f'Default Rate by {selected_cat}')
+        else:
+            sns.countplot(x=selected_cat, data=df, ax=ax2)
+            ax2.set_title(f'Count of {selected_cat}')
+        
+        ax2.tick_params(axis='x', rotation=45)
+        st.pyplot(fig)
+    else:
+        st.warning("No categorical features available for visualization")
+    
+    # Correlation analysis
+    st.subheader("Correlation Analysis")
+    corr_cols = ['Age', 'Income', 'Amount', 'Rate', 'Percent_income', 'Cred_length', 'Default']
+    available_corr_cols = [col for col in corr_cols if col in df.columns]
+    
+    if len(available_corr_cols) > 1:
+        corr_matrix = df[available_corr_cols].corr()
+        
+        fig, ax = plt.subplots(figsize=(10, 8))
+        sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', center=0, ax=ax)
+        ax.set_title('Correlation Matrix')
+        st.pyplot(fig)
+    else:
+        st.warning("Not enough numerical features for correlation analysis")
 
 def main():
     st.title("Loan Default Prediction Dashboard")
@@ -209,6 +381,7 @@ def main():
                     y = df['Default']
                 else:
                     y = None
+                    st.warning("No 'Default' column found - can't calculate metrics")
                 
                 model_choice = st.selectbox("Select a Model", 
                                           ["Logistic Regression", "Random Forest"])
@@ -231,20 +404,25 @@ def main():
                             st.subheader("Model Performance")
                             col1, col2 = st.columns(2)
                             with col1:
-                                st.pyplot(plot_roc_curve(y, y_pred_proba, model_choice))
+                                roc_fig = plot_roc_curve(y, y_pred_proba, model_choice)
+                                if roc_fig:
+                                    st.pyplot(roc_fig)
+                            
                             with col2:
-                                st.pyplot(plot_precision_recall_curve(y, y_pred_proba, model_choice))
+                                pr_fig = plot_precision_recall_curve(y, y_pred_proba, model_choice)
+                                if pr_fig:
+                                    st.pyplot(pr_fig)
                         
                         st.subheader("Feature Importance")
                         feature_names = X.columns.tolist()
-                        fig = plot_feature_importance(model, feature_names)
-                        if fig:
-                            st.pyplot(fig)
+                        fi_fig = plot_feature_importance(model, feature_names)
+                        if fi_fig:
+                            st.pyplot(fi_fig)
                         
                         st.subheader("SHAP Values")
-                        fig = plot_shap_values(model, X, feature_names)
-                        if fig:
-                            st.pyplot(fig)
+                        shap_fig = plot_shap_values(model, X, feature_names)
+                        if shap_fig:
+                            st.pyplot(shap_fig)
                         
                         st.subheader("Prediction Explanation")
                         example_idx = st.slider("Select an example to explain", 0, len(X)-1, 0)
