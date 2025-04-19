@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import joblib
 import shap
+import requests
+import io
 from sklearn.model_selection import train_test_split
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
@@ -20,6 +22,50 @@ from sklearn.metrics import (classification_report, confusion_matrix, roc_auc_sc
 # Set visualization style
 sns.set_style('whitegrid')
 plt.rcParams['figure.figsize'] = (10, 6)
+
+# --- Load Models from Google Drive ---
+def download_file_from_google_drive(id, destination):
+    URL = "https://drive.google.com/uc?export=download"
+    session = requests.Session()
+    response = session.get(URL, params={'id': id}, stream=True)
+    token = get_confirm_token(response)
+    
+    if token:
+        params = {'id': id, 'confirm': token}
+        response = session.get(URL, params=params, stream=True)
+    
+    save_response_content(response, destination)
+
+def get_confirm_token(response):
+    for key, value in response.cookies.items():
+        if key.startswith('download_warning'):
+            return value
+    return None
+
+def save_response_content(response, destination):
+    CHUNK_SIZE = 32768
+    with open(destination, "wb") as f:
+        for chunk in response.iter_content(CHUNK_SIZE):
+            if chunk:  # filter out keep-alive new chunks
+                f.write(chunk)
+
+@st.cache_resource()
+def load_model_from_drive(file_id, model_name):
+    try:
+        # Try to load from local cache first
+        return joblib.load(model_name)
+    except:
+        try:
+            # Download from Google Drive if not found locally
+            download_file_from_google_drive(file_id, model_name)
+            return joblib.load(model_name)
+        except Exception as e:
+            st.error(f"Failed to load model: {str(e)}")
+            return None
+
+# Model file IDs from Google Drive
+best_credit_risk_id = "15f8MTVbecl955ElY_OiFQMCzodZ95GpH"
+random_forest_id = "10Ez1zmYeI1gJv3n07ciXgRUR_l_3dROr"
 
 # --- Load Data ---
 @st.cache_data()
@@ -65,9 +111,6 @@ def create_features(df):
     df['loan_to_income'] = df['Amount'] / df['Income']
     df['rate_income_interaction'] = df['Rate'] * df['Percent_income']
     return df
-
-def load_model(model_path):
-    return joblib.load(model_path)
 
 def predict(model, data):
     y_pred = model.predict(data)
@@ -153,66 +196,131 @@ def plot_shap_values(model, X, feature_names):
         st.warning(f"SHAP visualization not available for this model type. Error: {str(e)}")
         return None
 
+def show_exploratory_analysis(df):
+    st.header("Exploratory Data Analysis")
+    
+    # Target variable distribution
+    st.subheader("Target Variable Distribution")
+    fig, ax = plt.subplots(figsize=(8, 5))
+    sns.countplot(x='Default', data=df, ax=ax)
+    ax.set_title('Distribution of Loan Defaults')
+    ax.set_xlabel('Default Status')
+    ax.set_ylabel('Count')
+    st.pyplot(fig)
+    
+    # Numerical features distribution
+    st.subheader("Numerical Features Distribution")
+    num_cols = ['Age', 'Income', 'Amount', 'Rate', 'Percent_income', 'Cred_length']
+    selected_num = st.selectbox("Select numerical feature to visualize", num_cols)
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    sns.histplot(df[selected_num], kde=True, ax=ax1)
+    ax1.set_title(f'Distribution of {selected_num}')
+    sns.boxplot(x='Default', y=selected_num, data=df, ax=ax2)
+    ax2.set_title(f'{selected_num} by Default Status')
+    st.pyplot(fig)
+    
+    # Categorical features distribution
+    st.subheader("Categorical Features Distribution")
+    cat_cols = ['Home', 'Intent', 'Status']
+    selected_cat = st.selectbox("Select categorical feature to visualize", cat_cols)
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    value_counts = df[selected_cat].value_counts()
+    ax1.pie(value_counts, labels=value_counts.index, autopct='%1.1f%%', startangle=90)
+    ax1.set_title(f'Distribution of {selected_cat}')
+    sns.countplot(x=selected_cat, hue='Default', data=df, ax=ax2)
+    ax2.set_title(f'Default Rate by {selected_cat}')
+    ax2.tick_params(axis='x', rotation=45)
+    st.pyplot(fig)
+    
+    # Correlation analysis
+    st.subheader("Correlation Analysis")
+    corr_cols = ['Age', 'Income', 'Amount', 'Rate', 'Percent_income', 'Cred_length', 'Default']
+    corr_matrix = df[corr_cols].corr()
+    
+    fig, ax = plt.subplots(figsize=(10, 8))
+    sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', center=0, ax=ax)
+    ax.set_title('Correlation Matrix')
+    st.pyplot(fig)
+    
+    # Default rate by age groups
+    st.subheader("Default Rate by Age Groups")
+    df['Age_Group'] = pd.cut(df['Age'], bins=[20, 30, 40, 50, 60, 70, 80])
+    age_default = df.groupby('Age_Group')['Default'].mean().reset_index()
+    
+    fig, ax = plt.subplots(figsize=(10, 5))
+    sns.barplot(x='Age_Group', y='Default', data=age_default, ax=ax)
+    ax.set_title('Default Rate by Age Group')
+    ax.set_xlabel('Age Group')
+    ax.set_ylabel('Default Rate')
+    ax.tick_params(axis='x', rotation=45)
+    st.pyplot(fig)
+    df.drop('Age_Group', axis=1, inplace=True)
+
 def main():
     st.title("Loan Default Prediction Dashboard")
     st.sidebar.title("Navigation")
     app_mode = st.sidebar.selectbox("Choose the section", ["Data Overview", "Exploratory Analysis", "Model Prediction"])
     uploaded_file = st.sidebar.file_uploader("Upload your CSV file", type="csv")
     df, data_dict = load_data(uploaded_file)
+    
     if df is not None:
-        if app_mode == "Model Prediction":
+        if app_mode == "Data Overview":
+            st.header("Data Overview")
+            st.write("First 5 rows of the dataset:")
+            st.dataframe(df.head())
+            st.subheader("Data Dictionary")
+            st.dataframe(pd.DataFrame.from_dict(data_dict, orient='index', columns=['Description']))
+            
+        elif app_mode == "Exploratory Analysis":
+            show_exploratory_analysis(df)
+            
+        elif app_mode == "Model Prediction":
             X_full = df.drop(columns=['Default'])
             X = create_features(X_full.drop(columns=['Id'], errors='ignore'))
             y = df['Default']
             cat_features = ['Home', 'Intent', 'age_bucket']
             num_features = ['Age', 'Income', 'Emp_length', 'Amount', 'Rate', 
-                            'Percent_income', 'Cred_length', 'debt_to_income', 
-                            'loan_to_income', 'rate_income_interaction']
-            model_choice = st.selectbox("Select a Model", ["Logistic Regression", "Random Forest", "Gradient Boosting"])
-            model_path = ""
+                          'Percent_income', 'Cred_length', 'debt_to_income', 
+                          'loan_to_income', 'rate_income_interaction']
+            
+            model_choice = st.selectbox("Select a Model", ["Logistic Regression", "Random Forest"])
+            
             if model_choice == "Logistic Regression":
-                model_path = "best_credit_risk_model.pkl"
+                model = load_model_from_drive(best_credit_risk_id, "best_credit_risk_model.pkl")
             elif model_choice == "Random Forest":
-                model_path = "random_forest_pipeline.pkl"
-            elif model_choice == "Gradient Boosting":
-                model_path = "gradient_boosting_pipeline.pkl"
-            if model_path:
-                try:
-                    model = load_model(model_path)
-                    st.subheader("Model Predictions")
-                    y_pred, y_pred_proba = predict(model, X_full)
-                    show_metrics(y, y_pred, y_pred_proba, model_choice)
-                    st.subheader("Model Performance")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.pyplot(plot_roc_curve(y, y_pred_proba, model_choice))
-                    with col2:
-                        st.pyplot(plot_precision_recall_curve(y, y_pred_proba, model_choice))
-                    st.subheader("Feature Importance")
-                    feature_names = num_features + cat_features
-                    fig = plot_feature_importance(model, feature_names)
-                    if fig:
-                        st.pyplot(fig)
-                    st.subheader("SHAP Values")
-                    fig = plot_shap_values(model, X, feature_names)
-                    if fig:
-                        st.pyplot(fig)
-                    st.subheader("Prediction Explanation")
-                    example_idx = st.slider("Select an example to explain", 0, len(X)-1, 0)
-                    if isinstance(model, Pipeline):
-                        transformer_steps = model.steps[:-1]
-                        transformer = Pipeline(transformer_steps)
-                        X_transformed = transformer.transform(X.iloc[[example_idx]])
-                    else:
-                        X_transformed = X.iloc[[example_idx]]
-                    st.write("Selected example features:")
-                    st.dataframe(X.iloc[[example_idx]])
-                    st.write(f"Predicted probability of default: {y_pred_proba[example_idx]:.2f}")
-                    st.write(f"Actual outcome: {'Default' if y.iloc[example_idx] == 1 else 'Non-Default'}")
-                except FileNotFoundError:
-                    st.error(f"Model file '{model_path}' not found. Please ensure the model file is in the correct directory.")
-                except Exception as e:
-                    st.error(f"An error occurred: {str(e)}")
+                model = load_model_from_drive(random_forest_id, "random_forest_model.pkl")
+            
+            if model is not None:
+                st.subheader("Model Predictions")
+                y_pred, y_pred_proba = predict(model, X)
+                show_metrics(y, y_pred, y_pred_proba, model_choice)
+                
+                st.subheader("Model Performance")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.pyplot(plot_roc_curve(y, y_pred_proba, model_choice))
+                with col2:
+                    st.pyplot(plot_precision_recall_curve(y, y_pred_proba, model_choice))
+                
+                st.subheader("Feature Importance")
+                feature_names = num_features + cat_features
+                fig = plot_feature_importance(model, feature_names)
+                if fig:
+                    st.pyplot(fig)
+                
+                st.subheader("SHAP Values")
+                fig = plot_shap_values(model, X, feature_names)
+                if fig:
+                    st.pyplot(fig)
+                
+                st.subheader("Prediction Explanation")
+                example_idx = st.slider("Select an example to explain", 0, len(X)-1, 0)
+                st.write("Selected example features:")
+                st.dataframe(X.iloc[[example_idx]])
+                st.write(f"Predicted probability of default: {y_pred_proba[example_idx]:.2f}")
+                st.write(f"Actual outcome: {'Default' if y.iloc[example_idx] == 1 else 'Non-Default'}")
 
 if __name__ == "__main__":
     main()
